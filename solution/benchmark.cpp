@@ -38,8 +38,8 @@ static const int RES_COUNT = sizeof(RES_SET) / sizeof(RES_SET[0]);
 static const int DST_W = 448, DST_H = 448;
 static const int GRID_T = 1, GRID_H = 28, GRID_W = 28;
 static const int MERGE_SIZE = 2, CHANNELS = 3;
-static const int INPUT_DIM = CHANNELS * MERGE_SIZE * MERGE_SIZE;  // 1536
-static const int SEQ_LEN = GRID_T * GRID_H * GRID_W * MERGE_SIZE * MERGE_SIZE; // 784
+static const int INPUT_DIM = CHANNELS * MERGE_SIZE * MERGE_SIZE;  // 12
+static const int SEQ_LEN = GRID_T * GRID_H * GRID_W; // 784 = 28*28 (merge_factor handled in decode, not work-item count)
 static const float MEAN_R = 0.48145f, MEAN_G = 0.45782f, MEAN_B = 0.40821f;
 static const float STD_R = 0.26862f,  STD_G = 0.26130f,  STD_B = 0.27577f;
 
@@ -242,7 +242,7 @@ int main(int argc, char** argv) {
         CL_CHECK(cerr, "createBuffer norm");
         cl_mem copy_norm_buf = clCreateBuffer(ctx, CL_MEM_READ_WRITE, norm_bytes, NULL, &cerr);
         CL_CHECK(cerr, "createBuffer norm_copy");
-        size_t patch_bytes = (size_t)SEQ_LEN * INPUT_DIM * sizeof(float);
+        size_t patch_bytes = (size_t)SEQ_LEN * 2 * MERGE_SIZE * MERGE_SIZE * INPUT_DIM * sizeof(float);
         cl_mem patch_buf = clCreateBuffer(ctx, CL_MEM_READ_WRITE, patch_bytes, NULL, &cerr);
         CL_CHECK(cerr, "createBuffer patches");
 
@@ -314,7 +314,7 @@ int main(int argc, char** argv) {
             clSetKernelArg(k_transpose, 1, sizeof(cl_mem), &patch_buf);
             clEnqueueNDRangeKernel(queue, k_transpose, 1, NULL, g1, l1, 1, &copy_ev, &transp_ev);
 
-            std::vector<float> patches(SEQ_LEN * 2 * INPUT_DIM);
+            std::vector<float> patches(SEQ_LEN * 2 * MERGE_SIZE * MERGE_SIZE * INPUT_DIM);
             clEnqueueReadBuffer(queue, patch_buf, CL_TRUE, 0, patch_bytes, patches.data(), 1, &transp_ev, &down_ev);
 
             cl_ulong start, end;

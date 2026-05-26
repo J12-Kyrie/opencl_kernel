@@ -74,8 +74,8 @@ __kernel void resize_bilinear_normalized(
 }
 
 // Transpose: [T, H, W, C] -> patches [seq_len, input_dim]
-// Exp 10: fixed 4x work-item redundancy (removed merge^2 from total)
-// NDRange: 1D over grid_t * grid_h * grid_w, local_work_size = 64
+// Exp 8: loop unrolling + precomputed base offsets
+// NDRange: 1D over seq_len = 784, local_work_size = 64
 __kernel void transpose_to_patch(
     __global const float* norm_img,
     __global float* patches,
@@ -87,48 +87,48 @@ __kernel void transpose_to_patch(
     int input_dim)
 {
     int seq_idx = get_global_id(0);
-    int total = grid_t * grid_h * grid_w;  // merge iterated locally, not in work-item dim
+    int total = grid_t * grid_h * grid_w * merge_size * merge_size;
     if (seq_idx >= total) return;
 
-    // Decode (t, h_block, w_block) — mh/mw iterated in inner loop
+    // 6D coordinate decode
     int remaining = seq_idx;
+    int mw_idx  = remaining & 1;  remaining >>= 1;  // merge_size=2
+    int mh_idx  = remaining & 1;  remaining >>= 1;
     int w_block = remaining % grid_w;  remaining /= grid_w;
     int h_block = remaining % grid_h;  remaining /= grid_h;
-    int t_idx   = remaining;
+    int t_idx   = remaining;  // grid_t=1 → always 0
 
-    // Source access params
-    int grid_merge_w = grid_w * merge_size;
-    int row_stride = grid_merge_w * channels;
+    // Precompute source base offset (common to all c/mh/mw combinations)
+    int merge_hw = merge_size * merge_size;  // =4
+    int grid_merge_w = grid_w * merge_size;  // =56
+    int row_stride = grid_merge_w * channels;  // =168
     int frame_base = t_idx * grid_h * merge_size * row_stride;
-    int h_base = frame_base + h_block * merge_size * row_stride;
-    int w_base = h_base + w_block * merge_size * channels;
+    int block_base = frame_base + h_block * merge_size * row_stride + w_block * merge_size * channels;
 
-    // Base output index for (t, h_block, w_block)
-    int out_base = seq_idx * merge_size * merge_size * input_dim;
+    // Destination base
+    __global float* dst_base = patches + seq_idx * input_dim;
 
-    // Iterate merge sub-positions (mh, mw) locally — 4 iterations
-    for (int mh = 0; mh < merge_size; mh++) {
-        for (int mw = 0; mw < merge_size; mw++) {
-            int src_h0 = w_base + mh * row_stride + mw * channels;
-            int src_h1 = src_h0 + row_stride;
-            int src_h0_1 = src_h0 + channels;
-            int src_h1_1 = src_h1 + channels;
+    // Exp 9: vload3 — read (R,G,B) at each spatial position in 1 instruction
+    int src_h0 = block_base;
+    int src_h1 = block_base + row_stride;
+    int src_h0_1 = src_h0 + channels;  // (1,0)
+    int src_h1_1 = src_h1 + channels;  // (1,1)
 
-            // vload3 reads 3 consecutive floats: R,G,B of a pixel
-            float3 p00 = vload3(0, norm_img + src_h0);
-            float3 p10 = vload3(0, norm_img + src_h0_1);
-            float3 p01 = vload3(0, norm_img + src_h1);
-            float3 p11 = vload3(0, norm_img + src_h1_1);
+    // vload3 reads 3 consecutive floats: R,G,B of a pixel
+    float3 p00 = vload3(0, norm_img + src_h0);     // pixel (0,0)
+    float3 p10 = vload3(0, norm_img + src_h0_1);   // pixel (1,0)
+    float3 p01 = vload3(0, norm_img + src_h1);     // pixel (0,1)
+    float3 p11 = vload3(0, norm_img + src_h1_1);   // pixel (1,1)
 
-            int sub_idx = (mh * merge_size + mw) * input_dim;
-            __global float* dst = patches + out_base + sub_idx;
+    // Channel 0 (R): 4 values at offsets 0,1,2,3
+    dst_base[0] = p00.x; dst_base[1] = p10.x;
+    dst_base[2] = p01.x; dst_base[3] = p11.x;
 
-            dst[0] = p00.x; dst[1] = p10.x;
-            dst[2] = p01.x; dst[3] = p11.x;
-            dst[4] = p00.y; dst[5] = p10.y;
-            dst[6] = p01.y; dst[7] = p11.y;
-            dst[8]  = p00.z; dst[9]  = p10.z;
-            dst[10] = p01.z; dst[11] = p11.z;
-        }
-    }
+    // Channel 1 (G): 4 values at offsets 4,5,6,7
+    dst_base[4] = p00.y; dst_base[5] = p10.y;
+    dst_base[6] = p01.y; dst_base[7] = p11.y;
+
+    // Channel 2 (B): 4 values at offsets 8,9,10,11
+    dst_base[8]  = p00.z; dst_base[9]  = p10.z;
+    dst_base[10] = p01.z; dst_base[11] = p11.z;
 }
