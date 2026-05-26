@@ -99,10 +99,30 @@ Compute `delta = (current_total_ms - best_total_ms) / best_total_ms`.
 5+ consecutive experiments within ±5% of each other → TRIGGER Research Agent.
 Research Agent reads ONLY from disk (summary.md, LESSONS.md, profile.md) — clean context, no optimizer bias.
 
+**Stop Condition (Q1)**: If Research Agent returns no unexplored direction with HIGH confidence ceiling > 1.05x, AND the last 5 experiments are all within 5% of current best → STOP. Declare convergence. Output final report. User can override to continue.
+
 ## Step 8: BUDGET
 - Default: /benchmark stride 2 (~2 min)
 - /benchmark full (~8 min) only for: confirming new best, or every 5 iterations
 - If experiment count > 50: increase default stride to 4
+
+## Exploration Mode (Every 10 Rounds)
+To avoid local-optimum traps, every 10th iteration:
+1. Identify the highest-ceiling UNTRIED direction from Research Agent's last ceiling table
+2. Branch from current best kernel.cl
+3. Run 2 quick experiments on the new direction
+4. If kernel time improves >3%: continue this direction (reset plateau counter)
+5. If not: revert to pre-exploration kernel, mark direction as explored
+6. Do NOT restart from baseline — branch from intermediate best state
+
+## Precision Budget + Pareto Acceptance
+- Define precision budget: cumulative precision loss < 5.0e-4 (vs baseline max_diff)
+- Track precision trend across experiments in summary.md
+- If an optimization degrades precision by delta_precision:
+  - Pareto criterion: accept if (perf_gain% / 1%) / (precision_loss / 1e-4) > 2.0
+  - Example: 6% gain with 2e-4 precision loss → ratio = 6/2 = 3.0 → ACCEPT
+  - Example: 3% gain with 3e-4 precision loss → ratio = 3/3 = 1.0 → REJECT
+- If cumulative precision loss approaches budget (80% consumed): pause for user review
 
 ## Pause Checkpoints
 Before executing any of these direction changes, pause and ask user:
