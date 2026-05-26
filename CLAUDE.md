@@ -31,9 +31,10 @@ Never skip /log-experiment. Never overwrite an existing result.md.
 
 ### 6. Never Stop the Loop
 Only the user can terminate. Adaptive slowdown: intervals can increase, loop continues.
+`max_iterations` in config.toml is a soft threshold that prompts the user — it does NOT auto-terminate.
 
 ### 7. No Benchmark Gaming
-No pre-warmed queues, no buffer reuse tricks, no hiding transfer time. All measurements must reflect real per-frame cost.
+No pre-warmed queues, no buffer reuse tricks, no hiding transfer time. All measurements reflect real per-frame cost.
 
 ### 8. anysearch Allowed for Research
 This workflow allows anysearch for OpenCL spec lookups, Adreno optimization references, and Qualcomm documentation.

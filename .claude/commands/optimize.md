@@ -2,7 +2,14 @@
 
 ## Overview
 This command drives the continuous optimization of `solution/kernel/kernel.cl`.
-It follows an 8-step cycle: Assess -> Plan -> Implement -> Validate -> Measure -> Log -> Decide -> Budget.
+It follows a bootstrap check + 8-step cycle.
+
+## Step 0: BOOTSTRAP — First-Run Baseline (conditional)
+- Check if `experiments/summary.md` is empty (no experiments logged)
+- If empty: run `/benchmark full`, log as `exp_1` (baseline)
+- Update summary.md with baseline entry
+- If summary.md already has entries: skip to Step 1
+- This ensures every optimization campaign starts from a measured baseline
 
 ## Step 1: ASSESS — Read Current State
 - Read `solution/kernel/kernel.cl` (current kernel)

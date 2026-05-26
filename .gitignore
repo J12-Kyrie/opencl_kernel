@@ -7,3 +7,9 @@ __pycache__/
 *.pyc
 experiments/bench.log
 experiments/exp_*/bench.log
+
+# Security: exclude files with credentials
+config.toml
+*.env
+**/credentials*
+**/secrets*

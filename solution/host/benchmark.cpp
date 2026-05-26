@@ -14,6 +14,8 @@
 #include <chrono>
 #include <fstream>
 #include <algorithm>
+#include <numeric>
+#include <sstream>
 
 // ---- Resolution Test Set ----
 struct Resolution {
@@ -52,6 +54,24 @@ static std::string readFile(const char* path) {
     std::ifstream f(path);
     if (!f.is_open()) { fprintf(stderr, "Cannot open: %s\n", path); return ""; }
     return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+
+// ---- Helper: Read GPU temperature from IQ9 thermal zones ----
+static float readGpuTemp() {
+    const char* zones[] = {
+        "/sys/class/thermal/thermal_zone0/temp",
+        "/sys/class/thermal/thermal_zone1/temp",
+        "/sys/class/thermal/thermal_zone5/temp",
+    };
+    for (const char* z : zones) {
+        std::ifstream f(z);
+        if (f.is_open()) {
+            int temp_mc;
+            f >> temp_mc;
+            return temp_mc / 1000.0f;
+        }
+    }
+    return -1.0f;
 }
 
 // ---- OpenCL Initialization ----
@@ -180,8 +200,10 @@ int main(int argc, char** argv) {
     fprintf(out, "# Timestamp: %lld\n", (long long)std::chrono::system_clock::now().time_since_epoch().count());
     fprintf(out, "# Mode: %s | Resolutions: %zu\n",
             mode == 0 ? "quick" : (mode == 1 ? "stride" : "full"), res_idx.size());
-    fprintf(out, "%-12s %10s %10s %10s %10s %10s %10s\n",
-            "Resolution", "Upload_ms", "Kernel_ms", "Copy_ms", "Transp_ms", "Down_ms", "Total_ms");
+    float temp_before = readGpuTemp();
+    fprintf(out, "# GPU Temp Before: %.1fC\n", temp_before);
+    fprintf(out, "%-12s %10s %10s %10s %10s %10s %10s %10s\n",
+            "Resolution", "Upload_ms", "Kernel_ms", "Copy_ms", "Transp_ms", "Down_ms", "Total_ms", "Stdev_ms");
 
     bool all_pass = true;
     for (int ri : res_idx) {
@@ -256,6 +278,7 @@ int main(int argc, char** argv) {
         // Timed iterations
         const int ITERS = 100;
         double total_upload = 0, total_kernel = 0, total_copy = 0, total_transp = 0, total_down = 0;
+        std::vector<double> iter_times; iter_times.reserve(ITERS);
 
         for (int iter = 0; iter < ITERS; iter++) {
             cl_event upload_ev, kernel_ev, copy_ev, transp_ev, down_ev;
@@ -281,11 +304,11 @@ int main(int argc, char** argv) {
                 clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end, NULL);
                 return (end - start) / 1e6;
             };
-            total_upload  += get_ms(upload_ev);
-            total_kernel  += get_ms(kernel_ev);
-            total_copy    += get_ms(copy_ev);
-            total_transp  += get_ms(transp_ev);
-            total_down    += get_ms(down_ev);
+            double u = get_ms(upload_ev), k = get_ms(kernel_ev), c = get_ms(copy_ev);
+            double t = get_ms(transp_ev), d = get_ms(down_ev);
+            total_upload += u; total_kernel += k; total_copy += c;
+            total_transp += t; total_down += d;
+            iter_times.push_back(u + k + c + t + d);
 
             clReleaseEvent(upload_ev); clReleaseEvent(kernel_ev); clReleaseEvent(copy_ev);
             clReleaseEvent(transp_ev); clReleaseEvent(down_ev);
@@ -295,18 +318,24 @@ int main(int argc, char** argv) {
         double avg_cp = total_copy / ITERS, avg_tr = total_transp / ITERS, avg_dn = total_down / ITERS;
         double avg_total = avg_up + avg_kern + avg_cp + avg_tr + avg_dn;
 
-        fprintf(out, "%-12s %10.3f %10.3f %10.3f %10.3f %10.3f %10.3f\n",
-                RES_SET[ri].name, avg_up, avg_kern, avg_cp, avg_tr, avg_dn, avg_total);
+        // Compute stdev of total time
+        double sum_sq = 0;
+        for (double t : iter_times) {
+            double d = t - avg_total;
+            sum_sq += d * d;
+        }
+        double stdev = std::sqrt(sum_sq / ITERS);
 
-        // Correctness check (first resolution only, to save time)
-        if (ri == res_idx[0]) {
+        fprintf(out, "%-12s %10.3f %10.3f %10.3f %10.3f %10.3f %10.3f %10.3f\n",
+                RES_SET[ri].name, avg_up, avg_kern, avg_cp, avg_tr, avg_dn, avg_total, stdev);
+
+        // Correctness check: quick/stride=first res, full=all resolutions
+        bool check_correctness = (mode == 0) ? (ri == res_idx[0]) : true;
+        if (check_correctness) {
             std::vector<float> cpu_dst;
             cpuBaseline(src_data, sw, sh, sstride, cpu_dst, DST_W, DST_H);
-            std::vector<float> gpu_patches(patch_bytes / sizeof(float));
-            clEnqueueReadBuffer(queue, patch_buf, CL_TRUE, 0, patch_bytes, gpu_patches.data(), 0, NULL, NULL);
 
             float max_diff = 0;
-            // Compare first frame's resized output (not patches, to keep it simple)
             std::vector<float> gpu_norm(norm_bytes / sizeof(float));
             clEnqueueReadBuffer(queue, norm_buf, CL_TRUE, 0, norm_bytes, gpu_norm.data(), 0, NULL, NULL);
             for (size_t i = 0; i < cpu_dst.size(); i++) {
@@ -314,7 +343,8 @@ int main(int argc, char** argv) {
                 if (d > max_diff) max_diff = d;
             }
             bool pass = (max_diff < 1e-3f);
-            fprintf(out, "# Correctness: max_diff=%.6f %s\n", max_diff, pass ? "PASS" : "FAIL");
+            fprintf(out, "# %s Correctness: max_diff=%.6f %s\n",
+                    RES_SET[ri].name, max_diff, pass ? "PASS" : "FAIL");
             if (!pass) all_pass = false;
         }
 
@@ -322,6 +352,9 @@ int main(int argc, char** argv) {
         clReleaseMemObject(copy_norm_buf); clReleaseMemObject(patch_buf);
     }
 
+    float temp_after = readGpuTemp();
+    float temp_delta = (temp_before > 0 && temp_after > 0) ? (temp_after - temp_before) : 0;
+    fprintf(out, "# GPU Temp After: %.1fC (delta: +%.1fC)\n", temp_after, temp_delta);
     fprintf(out, "# Overall: %s\n", all_pass ? "PASS" : "FAIL");
 
     if (output_file) fclose(out);
