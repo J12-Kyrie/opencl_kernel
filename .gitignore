@@ -1,0 +1,9 @@
+build/
+*.bin
+*.onnx
+*.serialized
+*.log
+__pycache__/
+*.pyc
+experiments/bench.log
+experiments/exp_*/bench.log
