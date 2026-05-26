@@ -6,3 +6,4 @@
 | 5 | 2026-05-26 | image2d_t HW bilinear (TP) | 0.090 | 0.579 | FAIL | ROLLBACK: read_imagef broken on Adreno 663, DEAD END |
 | 6 | 2026-05-26 | vload4 vectorized loads | 0.247 | 0.724 | PASS | Neutral: compiler already vectorizes, no measurable gain |
 | 7 | 2026-05-26 | WG size sweep {32,64,128,256} | 0.244 | 0.719 | PASS | Neutral: driver auto-tune already optimal, all WG within 1% |
+| 8 | 2026-05-26 | Transpose loop unroll + precomputed offsets | 0.311 | 0.603 | PASS | NEW BEST: -16% vs baseline |
