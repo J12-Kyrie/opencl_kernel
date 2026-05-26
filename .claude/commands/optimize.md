@@ -55,12 +55,49 @@ It follows a bootstrap check + 8-step cycle.
 - NEVER skip (including failures)
 - See `.claude/commands/log-experiment.md` for detailed flow
 
-## Step 7: DECIDE
-- >=5% improvement in kernel time or total time -> KEEP, mark as new best
-- <5% but positive -> A/B paired test to confirm
-- Regression (worse than previous best) -> REVERT kernel.cl to previous best
-- 5 consecutive iterations with <5% improvement -> TRIGGER Research Agent
-- Correctness failure that can't be fixed in 2 attempts -> REVERT
+## Step 7: DECIDE — Quantified Rollback Defense (Layer 3)
+
+Read `experiments/BEST.md` to get current champion metrics.
+Compute `delta = (current_total_ms - best_total_ms) / best_total_ms`.
+
+```
+┌─────────────────┬──────────────────────────────┬──────────────────────────────────────────────┐
+│    Result       │          Threshold            │                   Action                      │
+├─────────────────┼──────────────────────────────┼──────────────────────────────────────────────┤
+│ Clear win       │ delta < -5% (faster by >5%)   │ ACCEPT: keep + update BEST.md + mark NEW BEST│
+│ Marginal        │ |delta| <= 5%                 │ A/B paired test (same device, 3 runs mean)   │
+│ Regression      │ delta > +5% (slower by >5%)   │ ROLLBACK: cp exp_{best}/kernel.cl → solution/│
+│ Noise suspicion │ reference latency drifts >30% │ Device anomaly → re-run once                 │
+└─────────────────┴──────────────────────────────┴──────────────────────────────────────────────┘
+```
+
+### ACCEPT (clear win) Procedure
+1. Update `experiments/BEST.md`: best_exp=N, best_kernel_ms=X, best_total_ms=Y, best_date=today
+2. Copy kernel snapshot as golden copy: `cp solution/kernel/kernel.cl solution/kernel/best_kernel.cl`
+3. In `experiments/summary.md`: annotate as "NEW BEST" in Notes column
+4. Continue to next experiment on same optimization axis
+
+### MARGINAL (A/B paired test) Procedure
+1. Run `/benchmark stride 2` with current kernel → bench_A.log
+2. Restore kernel from `experiments/exp_{BEST}/kernel.cl`
+3. Run `/benchmark stride 2` with best kernel → bench_B.log
+4. Compare per-resolution mean total_ms
+5. If A is better on ALL resolutions → treat as ACCEPT
+6. If A is worse on ANY resolution → treat as ROLLBACK
+7. If mixed (better on some, worse on others) → ROLLBACK (conservative)
+
+### ROLLBACK Procedure
+1. Restore: `cp experiments/exp_{BEST}/kernel.cl solution/kernel/kernel.cl`
+2. Rebuild: `cd build && cmake ../solution/host && make -j$(nproc)`
+3. Verify: `./benchmark --quick` (total_ms must match best within 5%)
+4. In `experiments/exp_N/result.md`: add "Status: ROLLBACK — restored to exp_{BEST}"
+5. In `experiments/LESSONS.md`: record this direction as dead end
+6. In `experiments/summary.md`: annotate "ROLLBACK" in Notes column
+7. Next PLAN must choose a DIFFERENT optimization direction
+
+### Plateau Detection
+5+ consecutive experiments within ±5% of each other → TRIGGER Research Agent.
+Research Agent reads ONLY from disk (summary.md, LESSONS.md, profile.md) — clean context, no optimizer bias.
 
 ## Step 8: BUDGET
 - Default: /benchmark stride 2 (~2 min)
